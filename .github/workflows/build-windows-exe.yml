@@ -1,0 +1,75 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Ambil kode
+        uses: actions/checkout@v4
+
+      - name: Pasang Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Pasang pustaka
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Unduh FFmpeg ke bin/
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path bin | Out-Null
+          Invoke-WebRequest -Uri 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip' -OutFile "$env:TEMP\ffmpeg.zip"
+          Expand-Archive -Path "$env:TEMP\ffmpeg.zip" -DestinationPath "$env:TEMP\ffmpeg-extract" -Force
+          Copy-Item "$env:TEMP\ffmpeg-extract\ffmpeg-*-essentials_build\bin\ffmpeg.exe" "bin\ffmpeg.exe" -Force
+          Copy-Item "$env:TEMP\ffmpeg-extract\ffmpeg-*-essentials_build\bin\ffprobe.exe" "bin\ffprobe.exe" -Force
+          Get-ChildItem bin
+
+      - name: Cek kode (compile semua .py)
+        run: |
+          Get-ChildItem -Recurse -Filter *.py src | ForEach-Object { python -m py_compile $_.FullName }
+
+      - name: Bangun EXE (PyInstaller)
+        run: python scripts/build_exe.py
+
+      - name: Cek hasil EXE
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse dist
+          if (-not (Test-Path "dist/CineCutAI/CineCutAI.exe")) { throw "CineCutAI.exe tidak ketemu!" }
+
+      - name: Zip folder portable
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/CineCutAI -DestinationPath CineCutAI-Portable-Windows.zip
+
+      - name: Upload artifact (portable)
+        uses: actions/upload-artifact@v4
+        with:
+          name: CineCutAI-Portable-Windows
+          path: CineCutAI-Portable-Windows.zip
+
+      - name: Buat Release (hanya kalau push tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            CineCutAI-Portable-Windows.zip
+            dist/CineCutAI/CineCutAI.exe
+          body: |
+            CineCut AI — pembuat video recap / review film otomatis.
+            Cara pakai: unduh CineCutAI-Portable-Windows.zip, ekstrak, jalankan CineCutAI.exe.
+            Isi kunci Gemini di dalam aplikasi (tidak ikut di file ini).
+            Catatan: efek cermin/zoom adalah efek visual saja, BUKAN jaminan lolos Content ID.
