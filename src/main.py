@@ -39,7 +39,8 @@ def main(argv: list[str] | None = None) -> int:
     from src.utils.logger import Logger
     log = Logger()
     cfg = Config.load(api_key=args.api_key, work_dir=args.output_dir)
-    cfg.target_minutes = args.durasi
+    # Validasi durasi: 0 / negatif / >60 menit -> pakai 10 menit.
+    cfg.target_minutes = args.durasi if 0 < args.durasi <= 60 else 10.0
     cfg.aspect = args.rasio
     cfg.style = args.gaya
     if args.dry_run:
