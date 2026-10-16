@@ -33,8 +33,18 @@ def _is_windows() -> bool:
 
 
 def run_cmd(cmd: list[str], timeout: int | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True,
-                          timeout=timeout, errors="replace")
+    """Jalankan perintah. Kalau binary tidak ketemu (mis. FFmpeg belum
+    terpasang / folder bin/ kosong), kembalikan returncode 1 dengan pesan
+    jelas — JANGAN biarkan FileNotFoundError mentah meledak ke GUI."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout, errors="replace")
+    except FileNotFoundError as e:
+        prog = cmd[0] if cmd else "program"
+        return subprocess.CompletedProcess(
+            cmd, 1, "",
+            f"Program tidak ditemukan: {prog} ({e}). "
+            "Pasang FFmpeg atau pastikan folder bin/ berisi ffmpeg.exe / ffprobe.exe.")
 
 
 def probe(path: str | Path) -> dict:
