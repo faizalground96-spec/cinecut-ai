@@ -7,6 +7,7 @@ kalau Inno Setup tersedia, installer CineCutAI_Setup.exe.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -19,8 +20,8 @@ def main() -> int:
     icon = ROOT / "assets" / "icons" / "app.ico"
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir",
            "--windowed", "--name", "CineCutAI",
-           "--add-data", f"assets{Path.pathsep}assets",
-           "--add-data", f"bin{Path.pathsep}bin",
+           "--add-data", f"assets{os.pathsep}assets",
+           "--add-data", f"bin{os.pathsep}bin",
            str(ROOT / "src" / "main.py")]
     if icon.exists():
         cmd += ["--icon", str(icon)]
