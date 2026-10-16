@@ -84,36 +84,66 @@ def launch_gui(cfg: Config | None = None) -> None:
     status = ctk.CTkLabel(root, text="")
     status.pack(padx=12, pady=4, anchor="w")
 
+    # Tkinter TIDAK aman dipanggil dari thread pekerja: semua update UI
+    # harus dimarshal ke thread utama lewat root.after(). Kalau tidak,
+    # aplikasi bisa freeze / crash di Windows nyata.
+    def _ui(fn):
+        try:
+            root.after(0, fn)
+        except Exception:
+            pass
+
+    def _set_status(text: str):
+        _ui(lambda: status.configure(text=text))
+
+    state = {"running": False}
+
     def run():
+        if state["running"]:
+            return
         film = film_var.get().strip()
         if not film or not Path(film).exists():
-            status.configure(text="Pilih file film dulu ya.")
+            _set_status("Pilih file film dulu ya.")
             return
+        if Path(film).is_dir():
+            _set_status("Itu folder, bukan file film. Pilih file .mp4 / .mkv / .avi.")
+            return
+        # Validasi durasi: kosong / bukan angka / <=0 / >60 -> pakai 10 menit.
         try:
-            cfg.target_minutes = float(dur_var.get())
-        except ValueError:
-            cfg.target_minutes = 10.0
+            dur = float(dur_var.get())
+        except (ValueError, TypeError):
+            dur = 10.0
+        if dur <= 0 or dur > 60:
+            dur = 10.0
+        cfg.target_minutes = dur
         cfg.api_key = key_var.get().strip()
         cfg.style = style_var.get()
         cfg.aspect = aspect_var.get()
         cfg.flip_enabled = bool(flip_var.get())
-        logger = Logger(on_line=lambda line: panel.append_log(line))
-        panel.set_stage(0, "— mulai...")
+        state["running"] = True
+        _ui(lambda: start_btn.configure(state="disabled"))
+        # Logger dari thread pekerja -> marshal ke UI thread.
+        logger = Logger(on_line=lambda line: _ui(lambda: panel.append_log(line)))
+        _ui(lambda: panel.set_stage(0, "— mulai..."))
         from ..pipeline.run_pipeline import run_pipeline
         try:
             result = run_pipeline(cfg, film, logger=logger)
-            panel.set_stage(7, "— selesai!")
-            status.configure(text=f"Selesai! Video: {result['video']}")
+            _ui(lambda: panel.set_stage(7, "— selesai!"))
+            _set_status(f"Selesai! Video: {result['video']}")
             try:
                 open_video(result["video"])
             except Exception:
                 pass
         except Exception as e:
-            status.configure(text=f"Gagal: {e}")
+            _set_status(f"Gagal: {e}")
             logger.error(str(e))
+        finally:
+            state["running"] = False
+            _ui(lambda: start_btn.configure(state="normal"))
 
-    ctk.CTkButton(root, text="▶ MULAI BUAT VIDEO", command=lambda: threading.Thread(
-        target=run, daemon=True).start()).pack(padx=12, pady=10, anchor="w")
+    start_btn = ctk.CTkButton(root, text="▶ MULAI BUAT VIDEO", command=lambda: threading.Thread(
+        target=run, daemon=True).start())
+    start_btn.pack(padx=12, pady=10, anchor="w")
     root.mainloop()
 
 
