@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..config import DEFAULT_MODEL, is_not_found_error, resolve_model
 from ..utils import ffmpeg_helper
 from ..utils.logger import Logger
 
@@ -80,7 +81,7 @@ def _template_metadata(narrations: list[dict]) -> str:
 
 
 def make_upload_metadata(narrations: list[dict], out_path: str | Path,
-                         api_key: str = "", model: str = "gemini-2.5-flash",
+                         api_key: str = "", model: str = DEFAULT_MODEL,
                          logger: Logger | None = None) -> Path:
     log = logger or Logger()
     text = ""
@@ -92,7 +93,15 @@ def make_upload_metadata(narrations: list[dict], out_path: str | Path,
                       "5 judul clickbait (tapi jujur, tidak bohong), 1 deskripsi SEO, "
                       "10 hashtag, 1 prompt thumbnail.\n\n"
                       + "\n".join(n.get("narration", "") for n in narrations)[:6000])
-            resp = client.models.generate_content(model=model, contents=prompt)
+            model = resolve_model(model)
+            try:
+                resp = client.models.generate_content(model=model, contents=prompt)
+            except Exception as e:
+                if is_not_found_error(e) and model != DEFAULT_MODEL:
+                    resp = client.models.generate_content(
+                        model=DEFAULT_MODEL, contents=prompt)
+                else:
+                    raise
             text = (resp.text or "").strip()
         except Exception as e:
             log.warn(f"Metadata Gemini gagal ({e}). Memakai template.")

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..config import DEFAULT_MODEL, is_not_found_error, resolve_model
 from ..utils.logger import Logger
 from ..utils.time_parser import max_words_for_clip
 
@@ -35,8 +36,17 @@ def _gemini_narration(client, clip_file: str, scene: dict, wmax: int,
             f"Ringkasan adegan dari tim: {scene.get('scene_summary', '')}. "
             f"MAKSIMAL {wmax} kata, kalimat lengkap, tanpa spoiler di luar klip ini."
         )
-        resp = client.models.generate_content(
-            model=model, contents=[prompt, uploaded])
+        model = resolve_model(model)
+        try:
+            resp = client.models.generate_content(
+                model=model, contents=[prompt, uploaded])
+        except Exception as e:
+            # 404 NOT_FOUND (model lama) -> coba sekali lagi dengan 3.8-flash.
+            if is_not_found_error(e) and model != DEFAULT_MODEL:
+                resp = client.models.generate_content(
+                    model=DEFAULT_MODEL, contents=[prompt, uploaded])
+            else:
+                raise
         return (resp.text or "").strip()
     finally:
         try:
@@ -46,7 +56,7 @@ def _gemini_narration(client, clip_file: str, scene: dict, wmax: int,
 
 
 def generate_narration(clips: list[dict], work_dir: str | Path,
-                       api_key: str = "", model: str = "gemini-2.5-flash",
+                       api_key: str = "", model: str = DEFAULT_MODEL,
                        style: str = "Sinematik", words_per_second: float = 2.5,
                        logger: Logger | None = None) -> list[dict]:
     log = logger or Logger()

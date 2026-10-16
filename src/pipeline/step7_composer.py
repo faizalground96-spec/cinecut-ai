@@ -32,13 +32,45 @@ def _audio_duration(path: str) -> float:
         return 0.0
 
 
+def _ffmpeg_subtitles_path(ass_path: str | Path | None) -> str | None:
+    """Kembalikan path .ass yang aman untuk filter subtitles FFmpeg, atau None.
+
+    BUG 2 (Windows nyata Anna): filter subtitles FFmpeg memakai sintaks
+    `subtitles='file'`. Kalau file dikirim sebagai
+    `workspace\\subtitles\\sub_001.ass` (backslash Windows) atau
+    `C:\\...` / `C:/...` tanpa escape, libass gagal:
+    `Unable to open ...`, `[AVFilterGraph] Error initializing filters`.
+    Perbaikan: path absolut + forward slash + escape titik dua (`:` -> `\\:`)
+    + escape kutip tunggal. Kalau file tidak ada -> None (komposer lewati
+    filter subtitle untuk klip itu, jangan crash dengan error samar).
+    """
+    if not ass_path:
+        return None
+    p = Path(ass_path)
+    if not p.exists():
+        return None
+    # Absolute + forward slash: C:/Users/.../workspace/subtitles/sub_001.ass
+    posix = p.resolve().as_posix()
+    # Escape ':' (pemisah opsi filter) dan "'" (penutup string filter).
+    escaped = posix.replace(":", "\\:").replace("'", "\\'")
+    return escaped
+
+
 def _normalize_segment(item: dict, work_dir: Path, width: int, height: int,
                        flip: bool, zoom: bool, logger: Logger) -> Path:
     """Ubah 1 klip jadi segmen: video tersinkron + narasi + subtitle."""
     cid = item["clip_id"]
     seg = Path(work_dir) / "segments" / f"seg_{cid:03d}.mp4"
     seg.parent.mkdir(parents=True, exist_ok=True)
+    # Validasi input: file klip / audio hilang -> jangan biarkan FFmpeg
+    # meledak dengan error samar; beri pesan jelas di log.
+    if not item.get("file") or not Path(item["file"]).exists():
+        raise FileNotFoundError(f"File klip {cid} tidak ketemu: {item.get('file')}")
+    if not item.get("audio") or not Path(item["audio"]).exists():
+        raise FileNotFoundError(f"File audio klip {cid} tidak ketemu: {item.get('audio')}")
     d_clip = float(item.get("duration", 0) or 0)
+    if d_clip <= 0:
+        raise ValueError(f"Durasi klip {cid} tidak valid: {d_clip}")
     d_audio = _audio_duration(item["audio"]) if item.get("audio") else d_clip
     if d_audio <= 0:
         d_audio = d_clip
@@ -55,14 +87,36 @@ def _normalize_segment(item: dict, work_dir: Path, width: int, height: int,
     if zoom:
         vf.insert(1, "scale=iw*1.08:ih*1.08,crop=iw/1.08:ih/1.08")
     vf_str = ",".join(vf)
+    # Subtitle: kalau file .ass tidak ada / path tidak valid, LEWATI filter
+    # subtitle untuk klip ini (video tetap jadi, tanpa burn-in) + tulis
+    # peringatan jelas — jangan crash dengan "AVFilterGraph ... No such file".
+    ass_escaped = _ffmpeg_subtitles_path(item.get("ass"))
+    if ass_escaped is None:
+        logger.warn(
+            f"Subtitle klip {cid} tidak ditemukan ({item.get('ass')}). "
+            "Lanjut tanpa burn-in subtitle untuk klip ini.")
+        subtitles_filter = ""
+    else:
+        subtitles_filter = f",subtitles='{ass_escaped}'"
     # Campur: narasi (0 dB) + ambiens film dari klip (-25 dB sudah di Tahap 4).
+    # Kalau klip ternyata tidak punya track audio (mis. film bisu / gagal
+    # potong audio), jangan pakai [0:a] — FFmpeg akan error "matches no
+    # streams". Pakai narasi saja sebagai [aout].
+    try:
+        has_clip_audio = bool(ffmpeg_helper.media_info(item["file"])["audio_tracks"])
+    except Exception:
+        has_clip_audio = True
+    if has_clip_audio:
+        audio_fc = ("[1:a]aresample=44100[a1];[0:a]aresample=44100[a0];"
+                    "[a1][a0]amix=inputs=2:duration=first:weights=1 0.18[aout]")
+    else:
+        logger.warn(f"Klip {cid} tidak punya track audio — memakai narasi saja.")
+        audio_fc = "[1:a]aresample=44100[aout]"
     # sidechaincompress untuk ducking dipakai di tahap gabung BGM (lihat compose).
     cmd = [ffmpeg_helper.find_binary("ffmpeg"), "-y", "-v", "error",
            "-i", item["file"], "-i", item["audio"],
            "-filter_complex",
-           f"[0:v]{vf_str},subtitles='{item['ass']}'[v];"
-           f"[1:a]aresample=44100[a1];[0:a]aresample=44100[a0];"
-           f"[a1][a0]amix=inputs=2:duration=first:weights=1 0.18[aout]",
+           f"[0:v]{vf_str}{subtitles_filter}[v];{audio_fc}",
            "-map", "[v]", "-map", "[aout]",
            "-t", f"{d_audio:.3f}",
            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
@@ -80,12 +134,25 @@ def compose(segments_in: list[dict], work_dir: str | Path,
             logger: Logger | None = None) -> Path:
     log = logger or Logger()
     work = Path(work_dir)
+    # Pastikan folder subtitles ada (kalau Tahap 6 dilewati / work_dir baru).
+    (work / "subtitles").mkdir(parents=True, exist_ok=True)
     width, height = (1280, 720) if aspect == "16:9" else (720, 1280)
     segs: list[Path] = []
     for item in segments_in:
-        segs.append(_normalize_segment(item, work, width, height, flip, zoom, log))
+        try:
+            segs.append(_normalize_segment(item, work, width, height, flip, zoom, log))
+        except (FileNotFoundError, ValueError) as e:
+            # File klip/audio hilang atau durasi tidak valid -> lewati klip
+            # ini saja, jangan gagalkan seluruh video karena 1 klip rusak.
+            log.warn(f"Klip {item.get('clip_id')} dilewati: {e}")
+    if not segs:
+        raise RuntimeError("Semua klip gagal dikomposisi (file hilang / durasi tidak valid).")
     list_file = work / "segments" / "concat.txt"
-    list_file.write_text("".join(f"file '{s.as_posix()}'\n" for s in segs), encoding="utf-8")
+    # Escape kutip tunggal untuk concat demuxer: ' -> '\''
+    # (path dengan spasi sudah aman karena dibungkus kutip tunggal).
+    def _concat_entry(p: Path) -> str:
+        return "file '" + p.as_posix().replace("'", "'\\''") + "'\n"
+    list_file.write_text("".join(_concat_entry(s) for s in segs), encoding="utf-8")
     composed = work / "composed_raw.mp4"
     cmd = [ffmpeg_helper.find_binary("ffmpeg"), "-y", "-v", "error",
            "-f", "concat", "-safe", "0", "-i", str(list_file),

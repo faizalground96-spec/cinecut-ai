@@ -1,6 +1,6 @@
 """Tahap 3 — AI Analisis & Pilih Bagian Terbaik (Scene Selection).
 
-Mengirim transkrip ke Gemini (gemini-2.5-flash) dengan Structured Output
+Mengirim transkrip ke Gemini (gemini-3.8-flash) dengan Structured Output
 (response_schema JSON ketat) sesuai plan Section 3. Hasilnya daftar klip:
 {clip_id, phase, start_time, end_time, scene_summary, dramatic_score, suggested_sfx}
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..config import DEFAULT_MODEL, is_not_found_error, resolve_model
 from ..utils.logger import Logger
 from ..utils.time_parser import seconds_to_clock, srt_to_seconds
 
@@ -79,12 +80,26 @@ def _gemini_clips(transcript: list[dict], target_minutes: float, api_key: str,
                       "scene_summary", "dramatic_score", "suggested_sfx"],
         ),
     )
-    resp = client.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json", response_schema=schema),
-    )
+    model = resolve_model(model)
+    try:
+        resp = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json", response_schema=schema),
+        )
+    except Exception as e:
+        # Model lama (2.5) dibalas 404 NOT_FOUND oleh Google -> coba sekali
+        # lagi dengan model default yang masih ada (gemini-3.8-flash).
+        if is_not_found_error(e) and model != DEFAULT_MODEL:
+            resp = client.models.generate_content(
+                model=DEFAULT_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json", response_schema=schema),
+            )
+        else:
+            raise
     raw = resp.text or "[]"
     clips = json.loads(raw)
     # Validasi + rapikan
@@ -112,7 +127,7 @@ def _gemini_clips(transcript: list[dict], target_minutes: float, api_key: str,
 
 def select_scenes(transcript: list[dict], work_dir: str | Path,
                   target_minutes: float = 10.0, api_key: str = "",
-                  model: str = "gemini-2.5-flash",
+                  model: str = DEFAULT_MODEL,
                   logger: Logger | None = None) -> list[dict]:
     log = logger or Logger()
     clips: list[dict] = []

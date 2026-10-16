@@ -57,6 +57,17 @@ def _extract_embedded(video_path: str, out_srt: Path, logger: Logger) -> bool:
 
 def _transcribe_with_whisper(video_path: str, out_dir: Path, logger: Logger) -> list[dict]:
     """Fallback lokal: ekstrak audio 16kHz mono -> Faster-Whisper."""
+    # Kalau film tidak punya track audio sama sekali, transkripsi mustahil
+    # (FFmpeg akan gagal "Output file does not contain any stream").
+    # Beri pesan jelas, jangan biarkan error samar itu sampai ke pengguna.
+    try:
+        has_audio = bool(ffmpeg_helper.media_info(video_path)["audio_tracks"])
+    except Exception:
+        has_audio = True
+    if not has_audio:
+        raise RuntimeError(
+            "Film ini tidak punya track audio, jadi suaranya tidak bisa "
+            "ditranskripsi. Sediakan file subtitle .srt eksternal.")
     wav = out_dir / "audio_16k.wav"
     cmd = [ffmpeg_helper.find_binary("ffmpeg"), "-y", "-v", "error",
            "-i", video_path, "-vn", "-ac", "1", "-ar", "16000", str(wav)]
@@ -70,8 +81,14 @@ def _transcribe_with_whisper(video_path: str, out_dir: Path, logger: Logger) -> 
             "Faster-Whisper belum terpasang (pip install faster-whisper) "
             "dan tidak ada subtitle. Pasang subtitle .srt atau install Faster-Whisper.") from e
     logger.log("Menjalankan Faster-Whisper (lokal)... ini bisa agak lama.")
-    model = WhisperModel("small", device="cpu", compute_type="int8")
-    segments, _ = model.transcribe(str(wav), language=None)
+    try:
+        model = WhisperModel("small", device="cpu", compute_type="int8")
+        segments, _ = model.transcribe(str(wav), language=None)
+    except Exception as e:
+        raise RuntimeError(
+            "Transkripsi Faster-Whisper gagal (model belum terunduh / tidak ada "
+            f"internet / memori tidak cukup): {e}. Sediakan file subtitle .srt "
+            "eksternal supaya tidak perlu transkripsi.") from e
     out = []
     for seg in segments:
         out.append({"id": len(out) + 1,
