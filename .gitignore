@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+venv/
+.venv/
+.env
+*.log
+workspace/clips/*
+workspace/audio/*
+workspace/subtitles/*
+workspace/output/*
+!workspace/**/.gitkeep
+dist/
+build/
+*.spec
+CineCutAI/
+*.exe
